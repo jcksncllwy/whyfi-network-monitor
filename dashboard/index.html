@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Whyfi</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Whyfi</h1>
+        <p id="subtitle">Loading monitor data...</p>
+      </div>
+      <div class="controls">
+        <label>
+          Network
+          <select id="networkSelect">
+            <option value="current">Current</option>
+          </select>
+        </label>
+        <label>
+          Alias
+          <input id="networkAlias" type="text" placeholder="Network alias">
+        </label>
+        <button id="saveAliasButton" type="button">Save</button>
+        <label>
+          Window
+          <select id="windowSelect">
+            <option value="1">1h</option>
+            <option value="3">3h</option>
+            <option value="6" selected>6h</option>
+            <option value="24">24h</option>
+            <option value="72">3d</option>
+          </select>
+        </label>
+        <button id="refreshButton" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="status-grid" id="statusGrid"></section>
+
+      <section class="layout">
+        <article class="panel wide">
+          <div class="panel-head">
+            <h2>Latency</h2>
+            <span>gateway, WAN, HTTP p95</span>
+          </div>
+          <canvas id="latencyChart" height="220"></canvas>
+          <div class="legend" id="latencyLegend"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Anomalies</h2>
+            <span id="anomalyCount"></span>
+          </div>
+          <div class="anomaly-list" id="anomalyList"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Wi-Fi</h2>
+            <span>association</span>
+          </div>
+          <canvas id="wifiChart" height="180"></canvas>
+          <div class="details" id="wifiDetails"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Burst Jitter</h2>
+            <span>loss and packet delay</span>
+          </div>
+          <canvas id="burstChart" height="180"></canvas>
+          <div class="legend" id="burstLegend"></div>
+        </article>
+
+        <article class="panel wide">
+          <div class="panel-head">
+            <h2>HTTP Timing</h2>
+            <span>per target summary</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Target</th>
+                  <th>Median</th>
+                  <th>P95</th>
+                  <th>Max</th>
+                  <th>&gt;500ms</th>
+                  <th>&gt;1s</th>
+                  <th>Fail</th>
+                </tr>
+              </thead>
+              <tbody id="httpTable"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

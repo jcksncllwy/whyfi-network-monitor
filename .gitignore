@@ -1,0 +1,11 @@
+data/
+bin/
+inventory/
+notes/
+launchd/*.plist
+.playwright-cli/
+*.log
+*.sqlite
+*.sqlite-*
+__pycache__/
+.DS_Store
