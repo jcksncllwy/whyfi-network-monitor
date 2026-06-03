@@ -9,3 +9,6 @@ launchd/*.plist
 *.sqlite-*
 __pycache__/
 .DS_Store
+
+# Throwaway dev dependencies (Playwright etc.)
+node_modules/
