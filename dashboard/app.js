@@ -20,7 +20,9 @@ document.getElementById("networkSelect").addEventListener("change", (event) => {
   load();
 });
 document.getElementById("saveAliasButton").addEventListener("click", saveAlias);
-window.addEventListener("resize", () => renderCharts(state.data));
+window.addEventListener("resize", () => {
+  if (state.data) renderCharts(state.data);
+});
 
 load();
 state.refreshTimer = setInterval(load, 30000);
@@ -230,14 +232,16 @@ function renderCharts(data) {
 
 function drawLineChart(id, lines, unit) {
   const canvas = document.getElementById(id);
-  const parentWidth = canvas.parentElement.clientWidth - 28;
-  const width = Math.max(320, parentWidth);
-  const height = Number(canvas.getAttribute("height"));
+  // Measure the rendered CSS box, which is pinned by stylesheet rules. Do not
+  // derive size from the canvas bitmap or the height attribute: feeding the
+  // bitmap dimensions back into layout creates a resize loop that grows the
+  // canvas indefinitely on each redraw.
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(320, Math.round(rect.width));
+  const height = Math.round(rect.height) || Number(canvas.getAttribute("height"));
   const ratio = window.devicePixelRatio || 1;
-  canvas.width = width * ratio;
-  canvas.height = height * ratio;
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
+  canvas.width = Math.round(width * ratio);
+  canvas.height = Math.round(height * ratio);
   const ctx = canvas.getContext("2d");
   ctx.scale(ratio, ratio);
   ctx.clearRect(0, 0, width, height);

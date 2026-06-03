@@ -177,11 +177,21 @@ main {
 }
 
 canvas {
-  width: 100%;
   display: block;
+  width: 100%;
+  box-sizing: border-box;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fbfcfb;
+}
+
+#latencyChart {
+  height: 220px;
+}
+
+#wifiChart,
+#burstChart {
+  height: 180px;
 }
 
 .legend {
