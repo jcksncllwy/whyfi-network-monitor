@@ -360,17 +360,14 @@ def monitor_snapshot(
 def state_snapshot(
     gateway: str | None,
     interface: str | None,
-    privileged_wifi: bool = False,
-    include_wifi: bool = True,
 ) -> list[ProbeResult]:
+    # Wi-Fi association is read once at the top of each cycle (for both network
+    # identity and the wifi_association measurement row), so it is no longer
+    # gathered here.
     results: list[ProbeResult] = []
     if interface:
         ipv4 = current_ipv4(interface)
         results.append(ProbeResult("state", f"interface:{interface}", bool(ipv4), None, f"ipv4={ipv4 or 'none'}"))
-    if include_wifi:
-        wifi_result = wifi_association_result(privileged_wifi)
-        if wifi_result:
-            results.append(wifi_result)
     if gateway:
         mac = gateway_mac(gateway)
         results.append(ProbeResult("state", f"gateway_mac:{gateway}", bool(mac), None, mac or "unknown"))
@@ -381,20 +378,56 @@ def state_snapshot(
     return results
 
 
-def wifi_association_result(privileged_wifi: bool = False) -> ProbeResult | None:
+# Identity fields (ssid, geo) are resolved into a network_profiles row and the
+# in-memory current network id; they no longer need to be duplicated on every
+# wifi_association measurement row. bssid is kept because it identifies which
+# mesh radio the laptop is on, which roams independently of network identity and
+# is diagnostically useful. The remaining fields are Wi-Fi link quality, which is
+# time-series measurement data and stays in the sample row.
+WIFI_MEASUREMENT_FIELDS = (
+    "interface",
+    "bssid",
+    "rssi",
+    "noise",
+    "tx_rate",
+    "phy",
+    "channel",
+    "mcs",
+    "cca",
+)
+
+
+def read_wifi_association(privileged_wifi: bool = False) -> dict[str, str]:
+    """Read the current Wi-Fi association, or {} if unavailable.
+
+    This is the single OS read used both for network identity (ssid/bssid/geo)
+    and for link-quality measurement (rssi/tx_rate/...). Callers split those two
+    concerns: identity drives the in-memory network id; the measurement subset is
+    logged as a sample row.
+    """
     wifi = helper_app_wifi_status()
     if not wifi and privileged_wifi:
         wifi = wdutil_wifi_status()
     if not wifi:
         wifi = wifi_status()
+    return wifi or {}
+
+
+def wifi_association_result(wifi: dict[str, str]) -> ProbeResult | None:
+    """Build the wifi_association measurement row from an association dict.
+
+    Carries only link-quality fields (plus bssid). Network identity lives in the
+    profile pointed to by the row's network_id, not in duplicated ssid/geo fields.
+    """
     if not wifi:
         return None
+    measurement = {key: wifi[key] for key in WIFI_MEASUREMENT_FIELDS if key in wifi}
     return ProbeResult(
         "state",
         "wifi_association",
         bool(wifi.get("ssid")),
         None,
-        ",".join(f"{key}={value}" for key, value in wifi.items()),
+        ",".join(f"{key}={value}" for key, value in measurement.items()),
     )
 
 
@@ -876,7 +909,11 @@ def last_line(text: str) -> str:
     return lines[-1] if lines else ""
 
 
-def result_rows(cycle: int, results: list[ProbeResult]) -> list[dict[str, object]]:
+def result_rows(
+    cycle: int,
+    results: list[ProbeResult],
+    network_id: int | None = None,
+) -> list[dict[str, object]]:
     timestamp = now_local()
     rows: list[dict[str, object]] = []
     for result in results:
@@ -889,15 +926,16 @@ def result_rows(cycle: int, results: list[ProbeResult]) -> list[dict[str, object
                 "ok": str(result.ok).lower(),
                 "latency_ms": f"{result.latency_ms:.1f}" if result.latency_ms is not None else "",
                 "detail": result.detail,
+                "network_id": network_id,
             }
         )
     return rows
 
 
-def append_results(path: Path, rows: list[dict[str, object]]) -> None:
+def append_results(path: Path, rows: list[dict[str, object]], network_id: int | None = None) -> None:
     conn = whyfi_store.connect(path)
     try:
-        whyfi_store.insert_rows(conn, rows)
+        whyfi_store.insert_rows(conn, rows, network_id)
     finally:
         conn.close()
 
@@ -1023,6 +1061,15 @@ def main() -> int:
     print(f"interface={interface or 'unknown'}", flush=True)
     print(f"sqlite={args.sqlite}", flush=True)
 
+    # Seed the in-memory network id from the DB so the first rows after a restart
+    # inherit the right profile before this process reads its first association.
+    seed_conn = whyfi_store.connect(args.sqlite)
+    try:
+        current_network_id = whyfi_store.current_network_id_from_db(seed_conn)
+    finally:
+        seed_conn.close()
+    print(f"network_id={current_network_id if current_network_id is not None else 'unknown'}", flush=True)
+
     cycle = 0
     previous_counters: InterfaceCounters | None = None
     previous_counters_at: float | None = None
@@ -1033,6 +1080,22 @@ def main() -> int:
         cycle += 1
         cycle_started_at = time.monotonic()
         cycle_wall_started_at = time.time()
+
+        # Detect network identity first, before any probe rows are built, so the
+        # whole cycle is stamped with the network the laptop is actually on. The
+        # association read also feeds the wifi_association measurement row below.
+        # A redacted/unavailable SSID leaves current_network_id unchanged, so we
+        # keep the last known network instead of stranding rows as NULL.
+        wifi = read_wifi_association(args.privileged_wifi)
+        if wifi:
+            resolve_conn = whyfi_store.connect(args.sqlite)
+            try:
+                resolved = whyfi_store.resolve_network_id(resolve_conn, wifi, now_local())
+            finally:
+                resolve_conn.close()
+            if resolved is not None:
+                current_network_id = resolved
+
         results: list[ProbeResult] = [
             monitor_snapshot(
                 cycle_started_at,
@@ -1069,15 +1132,15 @@ def main() -> int:
         if usage_result:
             results.append(usage_result)
         if args.state_interval > 0 and (cycle == 1 or cycle % args.state_interval == 0):
-            results.extend(state_snapshot(gateway, interface, args.privileged_wifi, include_wifi=False))
+            results.extend(state_snapshot(gateway, interface))
         if args.wifi_state_interval > 0 and (cycle == 1 or cycle % args.wifi_state_interval == 0):
-            wifi_result = wifi_association_result(args.privileged_wifi)
+            wifi_result = wifi_association_result(wifi)
             if wifi_result:
                 results.append(wifi_result)
 
-        rows = result_rows(cycle, results)
+        rows = result_rows(cycle, results, current_network_id)
         try:
-            append_results(args.sqlite, rows)
+            append_results(args.sqlite, rows, current_network_id)
         except Exception as exc:
             print(f"{now_local()} sqlite_write_error={type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         print(f"{now_local()} cycle={cycle} {summarize(results)}", flush=True)
