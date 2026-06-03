@@ -262,8 +262,45 @@ def assign_network_profiles(conn: sqlite3.Connection) -> None:
             ssid = wifi.get("ssid", "")
             if is_real_ssid(ssid):
                 current_network_id = get_or_create_network_profile(conn, ssid, wifi, row["timestamp"])
+        # Carry-forward from a real-SSID wifi row is the primary signal. But many
+        # rows are non-wifi probes (ping/http/usage) or redacted-SSID wifi rows,
+        # and a stretch of NULL rows can begin before any real-SSID wifi row has
+        # been seen in this pass -- e.g. the very first rows ever collected, or a
+        # batch whose only wifi sample was redacted. In that case fall back to the
+        # nearest already-assigned network around this row so non-wifi probes
+        # inherit the profile their neighbours already carry, instead of being
+        # stranded as NULL forever.
+        if not current_network_id:
+            current_network_id = nearest_assigned_network(conn, row["timestamp_epoch"])
         if current_network_id:
             conn.execute("UPDATE samples SET network_id = ? WHERE id = ?", (current_network_id, row["id"]))
+
+
+def nearest_assigned_network(conn: sqlite3.Connection, timestamp_epoch: float | None) -> int | None:
+    """Nearest already-assigned network to a timestamp.
+
+    Prefers the most recent assigned row at or before the timestamp (the same
+    carry-forward semantics as live collection). If nothing precedes it -- e.g.
+    rows collected before the first real-SSID wifi association ever landed --
+    falls back to the earliest assigned row after it, so leading NULL rows still
+    inherit the profile they actually belonged to.
+    """
+    if timestamp_epoch is None:
+        return None
+    before = latest_assigned_network_before(conn, timestamp_epoch)
+    if before is not None:
+        return before
+    row = conn.execute(
+        """
+        SELECT network_id
+        FROM samples
+        WHERE network_id IS NOT NULL AND timestamp_epoch >= ?
+        ORDER BY timestamp_epoch ASC, id ASC
+        LIMIT 1
+        """,
+        (timestamp_epoch,),
+    ).fetchone()
+    return int(row["network_id"]) if row else None
 
 
 def latest_assigned_network_before(conn: sqlite3.Connection, timestamp_epoch: float | None) -> int | None:
