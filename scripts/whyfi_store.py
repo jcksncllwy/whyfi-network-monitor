@@ -122,19 +122,42 @@ def import_csv(conn: sqlite3.Connection, csv_path: Path, batch_size: int = 1000)
                 batch = []
     if batch:
         imported += insert_rows(conn, batch)
+    # CSV rows carry no live network context, so they insert untagged. Run the
+    # backfill pass to assign profiles from their wifi_association rows. Live
+    # collection stamps network_id on insert and does not need this.
+    with conn:
+        assign_network_profiles(conn)
     return imported
 
 
-def insert_rows(conn: sqlite3.Connection, rows: Iterable[dict[str, object]]) -> int:
+def insert_rows(
+    conn: sqlite3.Connection,
+    rows: Iterable[dict[str, object]],
+    network_id: int | None = None,
+) -> int:
+    """Insert sample rows, stamping each with network_id.
+
+    Live collection resolves the current network profile once per cycle (in
+    memory) and passes its id here, so every row is born tagged. A row's own
+    `network_id` value, if present, takes precedence -- this lets the CSV import
+    path set per-row ids while live collection passes a single cycle id.
+
+    No post-insert assignment pass runs here. assign_network_profiles() remains
+    a backfill/recovery tool for rows that arrive untagged (legacy imports), not
+    part of the hot write path.
+    """
     inserted = 0
     with conn:
         for row in rows:
-            inserted += insert_row(conn, row)
-        assign_network_profiles(conn)
+            inserted += insert_row(conn, row, network_id)
     return inserted
 
 
-def insert_row(conn: sqlite3.Connection, row: dict[str, object]) -> int:
+def insert_row(
+    conn: sqlite3.Connection,
+    row: dict[str, object],
+    network_id: int | None = None,
+) -> int:
     timestamp = str(row.get("timestamp", ""))
     cycle = int(row.get("cycle") or 0)
     probe = str(row.get("probe", ""))
@@ -143,13 +166,15 @@ def insert_row(conn: sqlite3.Connection, row: dict[str, object]) -> int:
     latency_ms = float_or_none(row.get("latency_ms"))
     detail = str(row.get("detail", ""))
     timestamp_epoch = timestamp_to_epoch(timestamp)
+    row_network_id = row.get("network_id")
+    effective_network_id = int(row_network_id) if row_network_id is not None else network_id
 
     cursor = conn.execute(
         """
-        INSERT OR IGNORE INTO samples(timestamp, timestamp_epoch, cycle, probe, target, ok, latency_ms, detail)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO samples(timestamp, timestamp_epoch, cycle, probe, target, ok, latency_ms, detail, network_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (timestamp, timestamp_epoch, cycle, probe, target, int(ok), latency_ms, detail),
+        (timestamp, timestamp_epoch, cycle, probe, target, int(ok), latency_ms, detail, effective_network_id),
     )
     if cursor.rowcount == 0:
         return 0
@@ -347,6 +372,43 @@ def get_or_create_network_profile(conn: sqlite3.Connection, ssid: str, wifi: dic
     network_id = int(cursor.lastrowid)
     record_network_identifiers(conn, network_id, wifi, timestamp)
     return network_id
+
+
+def resolve_network_id(
+    conn: sqlite3.Connection,
+    wifi: dict[str, str],
+    timestamp: str,
+) -> int | None:
+    """Resolve a wifi association dict to a network profile id.
+
+    Returns None when the SSID is missing or redacted (common under launchd),
+    so the caller can keep its last known network rather than mis-tagging rows.
+    Creates or updates the profile as a side effect when the SSID is real.
+    """
+    ssid = wifi.get("ssid", "")
+    if not is_real_ssid(ssid):
+        return None
+    with conn:
+        return get_or_create_network_profile(conn, ssid, wifi, timestamp)
+
+
+def current_network_id_from_db(conn: sqlite3.Connection) -> int | None:
+    """Most recently assigned network id in the DB.
+
+    Used to seed the collector's in-memory current network at startup, so the
+    first rows after a restart inherit the right profile before the first wifi
+    association of the new process has been read.
+    """
+    row = conn.execute(
+        """
+        SELECT network_id
+        FROM samples
+        WHERE network_id IS NOT NULL
+        ORDER BY timestamp_epoch DESC, id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return int(row["network_id"]) if row else None
 
 
 def is_real_ssid(value: str | None) -> bool:
