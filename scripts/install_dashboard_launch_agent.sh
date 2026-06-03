@@ -9,6 +9,14 @@ TARGET_PLIST="$TARGET_DIR/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
 PORT="${1:-8765}"
 
+# Validate the port before writing it into the plist. An invalid value
+# (non-numeric, out of range, or XML-special) would otherwise produce a broken
+# plist or a KeepAlive crash loop once bootstrapped.
+if [[ ! "$PORT" =~ '^[0-9]+$' ]] || (( PORT < 1 || PORT > 65535 )); then
+  echo "Error: port must be an integer in 1..65535, got: '$PORT'" >&2
+  exit 1
+fi
+
 mkdir -p "$TARGET_DIR" "$PROJECT_DIR/data"
 cat > "$TARGET_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
