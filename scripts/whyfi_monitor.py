@@ -360,17 +360,14 @@ def monitor_snapshot(
 def state_snapshot(
     gateway: str | None,
     interface: str | None,
-    privileged_wifi: bool = False,
-    include_wifi: bool = True,
 ) -> list[ProbeResult]:
+    # Wi-Fi association is read once at the top of each cycle (for both network
+    # identity and the wifi_association measurement row), so it is no longer
+    # gathered here.
     results: list[ProbeResult] = []
     if interface:
         ipv4 = current_ipv4(interface)
         results.append(ProbeResult("state", f"interface:{interface}", bool(ipv4), None, f"ipv4={ipv4 or 'none'}"))
-    if include_wifi:
-        wifi_result = wifi_association_result(privileged_wifi)
-        if wifi_result:
-            results.append(wifi_result)
     if gateway:
         mac = gateway_mac(gateway)
         results.append(ProbeResult("state", f"gateway_mac:{gateway}", bool(mac), None, mac or "unknown"))
@@ -1135,7 +1132,7 @@ def main() -> int:
         if usage_result:
             results.append(usage_result)
         if args.state_interval > 0 and (cycle == 1 or cycle % args.state_interval == 0):
-            results.extend(state_snapshot(gateway, interface, args.privileged_wifi, include_wifi=False))
+            results.extend(state_snapshot(gateway, interface))
         if args.wifi_state_interval > 0 and (cycle == 1 or cycle % args.wifi_state_interval == 0):
             wifi_result = wifi_association_result(wifi)
             if wifi_result:
